@@ -1,0 +1,542 @@
+---
+editor_options:
+  chunk_output_type: inline
+output:
+  pdf_document: default
+  html_document: default
+---
+First of all, we need to download the raw data into the user's download folder. 
+
+link to RNN generator examples
+https://docs.google.com/spreadsheets/d/1kzeNMLw43US_5X4aE6XMLYkjDO5q7v96U5v6uApaJ8c/edit#gid=0
+
+```{r Data Download}
+dir.create("~/Downloads/jena_climate", recursive = TRUE)
+download.file(
+  "https://s3.amazonaws.com/keras-datasets/jena_climate_2009_2016.csv.zip",
+  "~/Downloads/jena_climate/jena_climate_2009_2016.csv.zip"
+)
+unzip("~/Downloads/jena_climate/jena_climate_2009_2016.csv.zip",
+      exdir = "~/Downloads/jena_climate")
+
+library(tibble)
+library(readr)
+library(ggplot2)
+library(keras)
+library(tensorflow)
+```
+
+
+```{r IMPORT}
+
+data_dir <- "~/Downloads/jena_climate"
+fname <- file.path(data_dir, "jena_climate_2009_2016.csv")
+raw_data <- read_csv(fname)
+
+glimpse(raw_data)
+```
+
+Visualize data using ggplot. The first command provides an overview of the whole data set from 2009 to 2016, while the second zoom into the first 1000 lines of data (100x10mins of data since 2009)
+
+```{r DataExploration}
+ggplot(raw_data, aes(x = 1:nrow(raw_data), y = `T (degC)`)) + geom_line()
+
+ggplot(raw_data[1:1000, ], aes(x = 1:1000, y = `T (degC)`)) + geom_line()
+```
+
+
+
+The data is not in the proper format, so it will need some cleaning up. The chunk of code below scale and normalised the data, so it can be fed into the network later. Most libraries don't like to handle data that is not between -1 to 1.
+
+```{r DataPreProcessing}
+
+data <- data.matrix(raw_data[, -1])
+
+mean <- apply(data, 2, mean)
+std <- apply(data, 2, sd)
+data <- scale(data, center = mean, scale = std)
+
+normalize <- function(x) {
+  return ((x - min(x)) / (max(x) - min(x)))
+}
+
+max <- apply(data,2,max)
+min <- apply(data,2,min)
+
+data <- apply(data, 2, normalize)
+
+plot(data[1:30000,2 ])
+plot(data[30000:50000,2 ])
+
+```
+
+With such a large dataset, it is often difficult to directly compute all the possible time point relationships. Thus, a generator function is needed. The chunk of code below generates pairs of data that correlate to each other and selected data from different time points for training, testing and validation. This is to ensure we are not overfitting the ML model. 
+
+```{r Generators}
+generator <- function(data,
+                      lookback,
+                      delay,
+                      min_index,
+                      max_index,
+                      shuffle = FALSE,
+                      batch_size = 128,
+                      step = 6) {
+  if (is.null(max_index))
+    max_index <- nrow(data) - delay - 1
+  i <- min_index + lookback
+  function() {
+    if (shuffle) {
+      rows <-
+        sample(c((min_index + lookback):max_index), size = batch_size)
+    } else {
+      if (i + batch_size >= max_index)
+        i <<- min_index + lookback
+      rows <- c(i:min(i + batch_size - 1, max_index))
+      i <<- i + length(rows)
+    }
+    samples <- array(0, dim = c(length(rows),
+                                lookback / step,
+                                dim(data)[[-1]]))
+    targets <- array(0, dim = c(length(rows)))
+    
+    for (j in 1:length(rows)) {
+      indices <- seq(rows[[j]] - lookback, rows[[j]] - 1,
+                     length.out = dim(samples)[[2]])
+      samples[j, , ] <- data[indices, ]
+      targets[[j]] <- data[rows[[j]] + delay, 2]
+    }
+    list(samples, targets)
+  }
+}
+
+lookback <- 1440
+step <- 6
+delay <- 44
+batch_size <- 64
+
+train_gen <- generator(
+  data,
+  lookback = lookback,
+  delay = delay,
+  min_index = 1,
+  max_index = 30000,
+  shuffle = FALSE,
+  step = step,
+  batch_size = batch_size)
+
+```
+
+
+First, a basic feed-forward neural network model. This model tried to flatten the 2D array of (time vs variables) into a 1D array before feeding it to the network. This is extremely fast and easy, but often, not as reliable/accurate.
+
+
+
+```{r FlattenNN}
+
+lookback <- 240
+step <- 1
+delay <- 44
+batch_size <- 64
+
+train_gen <- generator(
+  data,
+  lookback = lookback,
+  delay = delay,
+  min_index = 1,
+  max_index = 30000,
+  shuffle = FALSE,
+  step = step,
+  batch_size = batch_size)
+
+train_gen_data <- train_gen()
+
+model <- keras_model_sequential() %>%
+  layer_flatten(input_shape = c(lookback / step, dim(data)[-1])) %>%
+  layer_dense(units = 128, activation = "relu") %>%
+  layer_dense(units = 64, activation = "relu") %>%
+  layer_dense(units = 1)
+
+summary(model)
+
+model %>% compile(optimizer = optimizer_rmsprop(),
+                  loss = "mae")
+
+history <- model %>% fit_generator(
+  train_gen,
+  steps_per_epoch = 500,
+  epochs = 3,
+)
+
+```
+
+
+Now lets print out the predicted data from our flatten network
+
+```{r}
+  batch_size_plot <- 17600
+  lookback_plot <- lookback
+  step_plot <- 1 
+  
+  pred_gen <- generator(
+    data,
+    lookback = lookback_plot,
+    delay = 0,
+    min_index = 30000,
+    max_index = 50000,
+    shuffle = FALSE,
+    step = step_plot,
+    batch_size = batch_size_plot
+  )
+  
+  pred_gen_data <- pred_gen()
+  
+  V1 = seq(1, length(pred_gen_data[[2]]))
+  
+  plot_data <-
+    as.data.frame(cbind(V1, pred_gen_data[[2]]))
+  
+  inputdata <- pred_gen_data[[1]]
+  dim(inputdata) <- c(batch_size_plot, lookback, 14)
+  
+  pred_out <- model %>%
+    predict(inputdata) 
+  
+  plot_data <-
+    cbind(plot_data, pred_out)
+  
+  p <-
+    ggplot(plot_data, aes(x = V1, y = V2)) + geom_point(colour = "blue", size = 0.1,alpha=0.4)
+  p <-
+    p + geom_point(aes(x = V1, y = pred_out), colour = "red", size = 0.1 ,alpha=0.4)
+  
+  p
+```
+ 
+Next, a basic unrolling of the generator function. Generator functions are used when the dataset output is too big to be fitted into the memory of a computer. However, to ease understanding, this chunk of code attempts to emulate the generator functions, whereby. It calculates the required input directly into a tensor, and uses the pre-calculated tensor to compute the model, thus, avoiding the use of a generator function (Which generates the tensor during the training steps). Take note the slow process of generating the tensor as you go long. 
+
+To help with the limitation in computing power, only 1D will be used here. The time-series of temperature, ignoring all other parameters. Thus, it will only be generating a matrix as input, not a tensor 
+
+```{r GeneratingArray}
+T_data <- data[1:10000, 2]
+
+x1 <- data.frame()
+for (i in 1:10000) {
+  x1 <- rbind(x1, t(rev(T_data[i:(i + 240)])))
+  if(i%%100 == 0){print(i)}
+}
+
+x1 <- x1[,order(ncol(x1):1)]
+
+x <- as.matrix(x1[,-241])
+y <- as.matrix(x1[, 241])
+
+dim(x) <- c(10000, 240, 1)
+
+```
+
+
+Now we train the model using the tensor we generated 
+```{r LSTM on precalculated Matrix}
+
+model <- keras_model_sequential() %>%
+  layer_lstm(units = 64, input_shape = c(240, 1)) %>%
+  layer_dense(units = 64, activation = "relu") %>%
+  layer_dense(units = 16, activation = "relu") %>%
+  layer_dense(units = 8, activation = "relu") %>%
+  layer_dense(units = 1, activation = "relu") 
+
+summary(model)
+
+model %>% compile(loss = 'mean_squared_error', optimizer = 'adam',metrics='mse')
+
+history <-
+  model %>% fit (
+    x,
+    y,
+    batch_size = 100,
+    epochs = 5,
+    validation_split = 0.1,
+    use_multiprocessing = T
+  )
+
+#validation_data = val_gen,
+#validation_steps = val_steps
+
+plot(history)
+```
+
+
+Once we get that out of the way, we can try to plot out our results as compared to the original data we trained on. To avoid overfitting, we will be testing the data from 30000rows onwards, so the training and testing data are completely from a different source.  
+
+```{r Plot Result 1}
+  
+  batch_size_plot <- 19760
+  lookback_plot <- 240
+  step_plot <- 1 
+  
+  pred_gen <- generator(
+    data,
+    lookback = lookback_plot,
+    delay = 0,
+    min_index = 30000,
+    max_index = 50000,
+    shuffle = FALSE,
+    step = step_plot,
+    batch_size = batch_size_plot
+  )
+  
+  pred_gen_data <- pred_gen()
+  
+  V1 = seq(1, length(pred_gen_data[[2]]))
+  
+  plot_data <-
+    as.data.frame(cbind(V1, pred_gen_data[[2]]))
+  
+  inputdata <- pred_gen_data[[1]][,,2]
+  dim(inputdata) <- c(batch_size_plot,lookback_plot, 1)
+  
+  pred_out <- model %>%
+    predict(inputdata) 
+  
+  plot_data <-
+    cbind(plot_data, pred_out)
+  
+  p <-
+    ggplot(plot_data, aes(x = V1, y = V2)) + geom_point( colour = "blue", size = 0.1,alpha=0.4)
+  p <-
+    p + geom_point(aes(x = V1, y = pred_out), colour = "red", size = 0.1 ,alpha=0.4)
+  
+  p
+```
+
+Then, the real LSTM with generator functions 
+```{r LSTM on all Parameters}
+lookback <- 240
+step <- 1
+delay <- 44
+batch_size <- 128
+
+train_gen <- generator(
+  data,
+  lookback = lookback,
+  delay = delay,
+  min_index = 1,
+  max_index = 30000,
+  shuffle = FALSE,
+  step = step,
+  batch_size = batch_size)
+
+model <- keras_model_sequential() %>%
+  layer_lstm(units = 64, input_shape = list(NULL, dim(data)[[-1]])) %>%
+  layer_dense(units = 64, activation = "relu") %>%
+  layer_dense(units = 32, activation = "relu") %>%
+  layer_dense(units = 1, activation = "relu")
+
+model %>% compile(optimizer = optimizer_rmsprop(),
+                  loss = "mae")
+
+summary(model)
+
+history <- model %>% fit_generator(
+  train_gen,
+  steps_per_epoch = 20,
+  epochs = 5
+)
+
+```
+ 
+Lastly, we plot out the prediction vs target data again. 
+
+```{r}
+  batch_size_plot = 17600
+  lookback_plot <- 240
+  step_plot <- 1 
+  
+  pred_gen <- generator(
+    data,
+    lookback = lookback_plot,
+    delay = 0,
+    min_index = 30000,
+    max_index = 50000,
+    shuffle = FALSE,
+    step = step_plot,
+    batch_size = batch_size_plot
+  )
+  
+  pred_gen_data <- pred_gen()
+  
+  V1 = seq(1, length(pred_gen_data[[2]]))
+  
+  plot_data <-
+    as.data.frame(cbind(V1, pred_gen_data[[2]]))
+  
+  inputdata <- pred_gen_data[[1]][,,]
+  dim(inputdata) <- c(batch_size_plot,lookback_plot, 14)
+  
+  pred_out <- model %>%
+    predict(inputdata) 
+  
+  plot_data <-
+    cbind(plot_data, pred_out[])
+  
+  p <-
+    ggplot(plot_data, aes(x = V1, y = V2)) + geom_point( colour = "blue", size = 0.1,alpha=0.4)
+  p <-
+    p + geom_point(aes(x = V1, y = pred_out), colour = "red", size = 0.1 ,alpha=0.4)
+  
+  p
+```
+
+
+Data exploration and reduction
+
+```{r}
+data <- data.matrix(raw_data[50000:100000, -1])
+
+mean <- apply(data, 2, mean)
+std <- apply(data, 2, sd)
+data <- scale(data, center = mean, scale = std)
+
+normalize <- function(x) {
+  return ((x - min(x)) / (max(x) - min(x)))
+}
+
+max <- apply(data,2,max)
+min <- apply(data,2,min)
+
+data <- apply(data, 2, normalize)
+
+data2 <- (data-0.5)
+
+plot(data2[,2])
+
+
+for (j in 1:14){
+  plot(data2[10000:20000,j])
+}
+
+
+data3 <- data2[,c(2,3)]
+
+```
+
+
+```{r}
+
+####################################################################################
+
+lookback <- 15
+step <- 1
+delay <- 0
+batch_size <- 100
+
+train_gen <- generator(
+  data3,
+  lookback = lookback,
+  delay = delay,
+  min_index = 1,
+  max_index = 30000,
+  shuffle = FALSE,
+  step = step,
+  batch_size = batch_size)
+
+val_gen <- generator(
+  data3,
+  lookback = lookback,
+  delay = delay,
+  min_index = 30000,
+  max_index = 50000,
+  shuffle = FALSE,
+  step = step,
+  batch_size = batch_size)
+
+
+model <- keras_model_sequential() %>%
+  layer_gru(units = 64, return_sequences = TRUE,input_shape = list(NULL, dim(data3)[[-1]])) %>%
+  bidirectional(layer_gru(units = 64)) %>%
+  layer_dense(units = 64, activation = "tanh") %>%
+  layer_dense(units = 32, activation = "tanh") %>%
+  layer_dense(units = 1, activation = "tanh")
+
+model %>% compile(optimizer = optimizer_rmsprop(),
+                  loss = "mae")
+
+summary(model)
+
+callbacks = callback_early_stopping(monitor = "val_loss", min_delta = 0,
+                                    patience = 2, verbose = 0, mode = "auto",
+                                    baseline = NULL, restore_best_weights = TRUE)
+
+history <- model %>% fit_generator(
+  train_gen,
+  steps_per_epoch = 35,
+  epochs = 20,
+  callbacks=callbacks,
+  validation_data = val_gen,
+  validation_steps = 5)
+
+
+```
+
+
+```{r}
+batch_size_plot <- 19500
+lookback_plot <- 15
+step_plot <- 1
+
+pred_gen <- generator(
+  data3,
+  lookback = lookback_plot,
+  delay = 0,
+  min_index = 30000,
+  max_index = 50000,
+  shuffle = FALSE,
+  step = step_plot,
+  batch_size = batch_size_plot
+)
+
+pred_gen_data <- pred_gen()
+
+V1 = seq(1, length(pred_gen_data[[2]]))
+
+plot_data <-
+  as.data.frame(cbind(V1, pred_gen_data[[2]]))
+
+inputdata <- pred_gen_data[[1]][, , ]
+dim(inputdata) <- c(batch_size_plot, lookback_plot, 2)
+
+pred_out <- model %>%
+  predict(inputdata)
+
+plot_data <-
+  cbind(plot_data, pred_out[])
+
+p <-
+  ggplot(plot_data, aes(x = V1, y = V2)) + geom_point(colour = "blue",
+                                                      size = 0.1,
+                                                      alpha = 0.4)
+p <-
+  p + geom_point(
+    aes(x = V1, y = pred_out),
+    colour = "red",
+    size = 0.1 ,
+    alpha = 0.4
+  )
+
+p
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
