@@ -2,22 +2,25 @@
 editor_options:
   chunk_output_type: inline
 output:
-  pdf_document: default
-  html_document: default
+  md_document:
+    variant: gfm
 ---
+
+#Data Download
+
 First of all, we need to download the raw data into the user's download folder. 
 
 link to RNN generator examples
 https://docs.google.com/spreadsheets/d/1kzeNMLw43US_5X4aE6XMLYkjDO5q7v96U5v6uApaJ8c/edit#gid=0
 
-```{r Data Download}
-dir.create("~/Downloads/jena_climate", recursive = TRUE)
-download.file(
-  "https://s3.amazonaws.com/keras-datasets/jena_climate_2009_2016.csv.zip",
-  "~/Downloads/jena_climate/jena_climate_2009_2016.csv.zip"
-)
-unzip("~/Downloads/jena_climate/jena_climate_2009_2016.csv.zip",
-      exdir = "~/Downloads/jena_climate")
+```{r}
+#dir.create("~/Downloads/jena_climate", recursive = TRUE)
+#download.file(
+#  "https://s3.amazonaws.com/keras-datasets/jena_climate_2009_2016.csv.zip",
+#  "~/Downloads/jena_climate/jena_climate_2009_2016.csv.zip"
+#)
+#unzip("~/Downloads/jena_climate/jena_climate_2009_2016.csv.zip",
+#      exdir = "~/Downloads/jena_climate")
 
 library(tibble)
 library(readr)
@@ -26,8 +29,8 @@ library(keras)
 library(tensorflow)
 ```
 
-
-```{r IMPORT}
+# Data Preparation 
+```{r}
 
 data_dir <- "~/Downloads/jena_climate"
 fname <- file.path(data_dir, "jena_climate_2009_2016.csv")
@@ -161,10 +164,11 @@ summary(model)
 model %>% compile(optimizer = optimizer_rmsprop(),
                   loss = "mae")
 
-history <- model %>% fit_generator(
-  train_gen,
-  steps_per_epoch = 500,
-  epochs = 3,
+history <- model %>% fit(
+  train_gen_data[[1]],train_gen_data[[2]],
+  batch_size = 32,
+  epochs = 20,
+  use_multiprocessing = T
 )
 
 ```
@@ -326,6 +330,8 @@ train_gen <- generator(
   step = step,
   batch_size = batch_size)
 
+train_gen_data <- train_gen() 
+
 model <- keras_model_sequential() %>%
   layer_lstm(units = 64, input_shape = list(NULL, dim(data)[[-1]])) %>%
   layer_dense(units = 64, activation = "relu") %>%
@@ -337,10 +343,12 @@ model %>% compile(optimizer = optimizer_rmsprop(),
 
 summary(model)
 
-history <- model %>% fit_generator(
-  train_gen,
-  steps_per_epoch = 20,
-  epochs = 5
+history <- model %>% fit(
+  train_gen_data[[1]],train_gen_data[[2]],
+  batch_size = 4,
+  step_per_epoch = 1,
+  epochs = 5,
+  use_multiprocessing = T
 )
 
 ```
@@ -385,6 +393,7 @@ Lastly, we plot out the prediction vs target data again.
     p + geom_point(aes(x = V1, y = pred_out), colour = "red", size = 0.1 ,alpha=0.4)
   
   p
+  
 ```
 
 
@@ -425,10 +434,10 @@ data3 <- data2[,c(2,3)]
 
 ####################################################################################
 
-lookback <- 15
+lookback <- 28
 step <- 1
 delay <- 0
-batch_size <- 100
+batch_size <- 2560
 
 train_gen <- generator(
   data3,
@@ -450,6 +459,8 @@ val_gen <- generator(
   step = step,
   batch_size = batch_size)
 
+train_gen_data <- train_gen()
+val_gen_data <- val_gen()
 
 model <- keras_model_sequential() %>%
   layer_gru(units = 64, return_sequences = TRUE,input_shape = list(NULL, dim(data3)[[-1]])) %>%
@@ -464,15 +475,16 @@ model %>% compile(optimizer = optimizer_rmsprop(),
 summary(model)
 
 callbacks = callback_early_stopping(monitor = "val_loss", min_delta = 0,
-                                    patience = 2, verbose = 0, mode = "auto",
+                                    patience = 10, verbose = 0, mode = "auto",
                                     baseline = NULL, restore_best_weights = TRUE)
 
-history <- model %>% fit_generator(
-  train_gen,
-  steps_per_epoch = 35,
-  epochs = 20,
-  callbacks=callbacks,
-  validation_data = val_gen,
+
+history <- model %>% fit(
+  train_gen_data[[1]],train_gen_data[[2]],
+  batch_size = 32,
+  epochs = 50,
+  callbacks = callbacks,
+  validation_data = val_gen_data,
   validation_steps = 5)
 
 
