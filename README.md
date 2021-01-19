@@ -3,8 +3,6 @@
 First of all, we need to download the raw data into the user’s download
 folder.
 
-link to RNN generator examples
-<https://docs.google.com/spreadsheets/d/1kzeNMLw43US_5X4aE6XMLYkjDO5q7v96U5v6uApaJ8c/edit#gid=0>
 
 ``` r
 #dir.create("~/Downloads/jena_climate", recursive = TRUE)
@@ -185,6 +183,8 @@ flatten the 2D array of (time vs variables) into a 1D array before
 feeding it to the network. This is extremely fast and easy, but often,
 not as reliable/accurate.
 
+
+
 ``` r
 lookback <- 240
 step <- 1
@@ -297,6 +297,10 @@ note the slow process of generating the tensor as you go long.
 To help with the limitation in computing power, only 1D will be used
 here. The time-series of temperature, ignoring all other parameters.
 Thus, it will only be generating a matrix as input, not a tensor
+
+An example in Spreadsheet style
+<https://docs.google.com/spreadsheets/d/1kzeNMLw43US_5X4aE6XMLYkjDO5q7v96U5v6uApaJ8c/edit#gid=0>
+
 
 ``` r
 T_data <- data[1:10000, 2]
